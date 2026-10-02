@@ -28,6 +28,19 @@ function authenticateToken(req, res, next) {
   });
 }
 
+// ==================== UTILITAIRE ====================
+// Convertit une ligne SQL (snake_case) en objet frontend (camelCase)
+function formatUser(row) {
+  return {
+    id: row.id,
+    fullName: row.full_name,
+    email: row.email,
+    profileTypeId: row.profile_type_id,
+    profileSelected: row.profile_selected,
+    besoinsSpecifiques: row.besoins_specifiques,
+  };
+}
+
 // ==================== ROUTE DE TEST ====================
 app.get('/', (req, res) => {
   res.json({ message: 'API Assistant opérationnelle 🚀' });
@@ -36,29 +49,30 @@ app.get('/', (req, res) => {
 // ==================== AUTHENTIFICATION ====================
 // Inscription
 app.post('/api/auth/register', async (req, res) => {
-  const { full_name, email, password } = req.body;
-  if (!full_name || !email || !password) {
+  // ⚡ Accepte fullName (camelCase) OU full_name (snake_case)
+  const fullName = req.body.fullName || req.body.full_name;
+  const { email, password } = req.body;
+
+  if (!fullName || !email || !password) {
     return res.status(400).json({ error: 'Tous les champs sont obligatoires' });
   }
+
   try {
-    // Vérifier si l'utilisateur existe déjà
     const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'Cet email est déjà utilisé' });
     }
 
-    // Hasher le mot de passe
     const hash = await bcrypt.hash(password, 10);
 
-    // Insérer
     const result = await pool.query(
       `INSERT INTO users (full_name, email, password_hash) 
        VALUES ($1, $2, $3) 
-       RETURNING id, full_name, email, created_at`,
-      [full_name, email, hash]
+       RETURNING id, full_name, email, profile_type_id, profile_selected, besoins_specifiques`,
+      [fullName, email, hash]
     );
 
-    const user = result.rows[0];
+    const user = formatUser(result.rows[0]);
     const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, {
       expiresIn: '30d',
     });
@@ -78,7 +92,8 @@ app.post('/api/auth/login', async (req, res) => {
   }
   try {
     const result = await pool.query(
-      'SELECT id, full_name, email, password_hash FROM users WHERE email = $1',
+      `SELECT id, full_name, email, password_hash, profile_type_id, profile_selected, besoins_specifiques 
+       FROM users WHERE email = $1`,
       [email]
     );
 
@@ -86,27 +101,38 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
     }
 
-    const user = result.rows[0];
-    const isValid = await bcrypt.compare(password, user.password_hash);
+    const row = result.rows[0];
+    const isValid = await bcrypt.compare(password, row.password_hash);
 
     if (!isValid) {
       return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
     }
 
+    const user = formatUser(row);
     const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, {
       expiresIn: '30d',
     });
 
-    res.json({
-      user: {
-        id: user.id,
-        full_name: user.full_name,
-        email: user.email,
-      },
-      token,
-    });
+    res.json({ user, token });
   } catch (err) {
     console.error('Erreur login:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ⚡ NOUVEAU : Restaurer la session au démarrage de l'app
+app.get('/api/auth/me', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, full_name, email, profile_type_id, profile_selected, besoins_specifiques 
+       FROM users WHERE id = $1`,
+      [req.userId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    }
+    res.json({ user: formatUser(result.rows[0]) });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -115,11 +141,11 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/users/email/:email', async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, full_name, email FROM users WHERE email = $1',
+      'SELECT id, full_name, email, profile_type_id, profile_selected, besoins_specifiques FROM users WHERE email = $1',
       [req.params.email]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Utilisateur non trouvé' });
-    res.json(result.rows[0]);
+    res.json(formatUser(result.rows[0]));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -277,25 +303,22 @@ app.patch('/api/tasks/:id/toggle', async (req, res) => {
 });
 
 // ==================== PROFIL ====================
-// Récupérer le profil de l'utilisateur connecté
 app.get('/api/profile-type', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, profile_type_id, profile_selected, besoins_specifiques FROM users WHERE id = $1',
+      'SELECT id, full_name, email, profile_type_id, profile_selected, besoins_specifiques FROM users WHERE id = $1',
       [req.userId]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
-    res.json(result.rows[0]);
+    res.json(formatUser(result.rows[0]));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Mettre à jour le profil de l'utilisateur connecté
 app.put('/api/profile-type', authenticateToken, async (req, res) => {
-  // Le frontend envoie "profileTypeId" (camelCase)
   const { profileTypeId, besoinsSpecifiques } = req.body;
 
   if (!profileTypeId) {
@@ -318,16 +341,7 @@ app.put('/api/profile-type', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
 
-    // Réponse en camelCase pour le frontend
-    const user = result.rows[0];
-    res.json({
-      id: user.id,
-      fullName: user.full_name,
-      email: user.email,
-      profileTypeId: user.profile_type_id,
-      profileSelected: user.profile_selected,
-      besoinsSpecifiques: user.besoins_specifiques,
-    });
+    res.json(formatUser(result.rows[0]));
   } catch (err) {
     console.error('Erreur profile-type:', err);
     res.status(500).json({ error: err.message });
@@ -336,7 +350,6 @@ app.put('/api/profile-type', authenticateToken, async (req, res) => {
 
 // ==================== DÉMARRAGE ====================
 const PORT = process.env.PORT || 4000;
-// ✅ Remplacez la fin par ceci
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 API démarrée sur http://0.0.0.0:${PORT}`);
 });
