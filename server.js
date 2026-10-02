@@ -46,6 +46,15 @@ app.get('/', (req, res) => {
   res.json({ message: 'API Assistant opérationnelle 🚀' });
 });
 
+// Ajoute cette route juste après la route '/'
+app.get('/version', (req, res) => {
+  res.json({ 
+    version: '2.0.0',
+    hasAuthMe: true,
+    timestamp: new Date().toISOString()
+  });
+});
+
 // ==================== AUTHENTIFICATION ====================
 // Inscription
 app.post('/api/auth/register', async (req, res) => {
