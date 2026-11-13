@@ -46,19 +46,16 @@ app.get('/', (req, res) => {
   res.json({ message: 'API Assistant opérationnelle 🚀' });
 });
 
-// Ajoute cette route juste après la route '/'
 app.get('/version', (req, res) => {
   res.json({ 
-    version: '2.0.0',
-    hasAuthMe: true,
+    version: '2.0.1',
+    hasRelatives: true,
     timestamp: new Date().toISOString()
   });
 });
 
 // ==================== AUTHENTIFICATION ====================
-// Inscription
 app.post('/api/auth/register', async (req, res) => {
-  // ⚡ Accepte fullName (camelCase) OU full_name (snake_case)
   const fullName = req.body.fullName || req.body.full_name;
   const { email, password } = req.body;
 
@@ -93,7 +90,6 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Connexion
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
@@ -129,7 +125,6 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// ⚡ NOUVEAU : Restaurer la session au démarrage de l'app
 app.get('/api/auth/me', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
@@ -155,6 +150,66 @@ app.get('/api/users/email/:email', async (req, res) => {
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Utilisateur non trouvé' });
     res.json(formatUser(result.rows[0]));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== RELATIVES (PROCHES) ⚡ NOUVEAU ====================
+// Ajouter un proche
+app.post('/api/relatives', async (req, res) => {
+  const { user_id, name, phone, relation } = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO relatives (user_id, name, phone, relation) 
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [user_id, name, phone, relation]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Récupérer les proches d'un utilisateur
+app.get('/api/relatives/:userId', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM relatives WHERE user_id = $1 ORDER BY created_at DESC',
+      [req.params.userId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Supprimer un proche
+app.delete('/api/relatives/:id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'DELETE FROM relatives WHERE id = $1 RETURNING *',
+      [req.params.id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Proche non trouvé' });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== EMERGENCY ALERTS (URGENCES) ⚡ NOUVEAU ====================
+app.post('/api/emergency-alerts', async (req, res) => {
+  const { user_id, source } = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO emergency_alerts (user_id, source) 
+       VALUES ($1, $2) RETURNING *`,
+      [user_id, source || 'app']
+    );
+    res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
